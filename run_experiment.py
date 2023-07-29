@@ -14,12 +14,13 @@ import numpy as np
 import torch
 from vrdm import VRM, VRDM
 
-from torch.autograd import Variable
-import time, os, argparse, warnings
+import os
+import warnings
 import scipy.io as sio
-from copy import deepcopy
+
 
 arguments = docopt(__doc__, version='1.0')
+
 
 def test_performance(agent_test, env_test, action_filter, times=10):
 
@@ -42,6 +43,7 @@ def test_performance(agent_test, env_test, action_filter, times=10):
                 break
 
     return EpiTestRet / times
+
 
 savepath = './data/'
 
@@ -71,6 +73,33 @@ if arguments["--render"]:
 else:
     rendering = False
 
+vary_dict = {
+    'fixed': {
+        'damping_constant_bounds': (4.0, 4.0),
+        'spring_stiffness_bounds': (2.0, 2.0),
+        'mass_bounds': (20.0, 20.0),
+    },
+    'small': {
+        'damping_constant_bounds': (3.5, 5.5),
+        'spring_stiffness_bounds': (1.75, 3.0),
+        'mass_bounds': (17.5, 40.0),
+    },
+    'med': {
+        'damping_constant_bounds': (3.0, 7.0),
+        'spring_stiffness_bounds': (1.25, 4.0),
+        'mass_bounds': (15.0, 60.0),
+    },
+    'large': {
+        'damping_constant_bounds': (2.0, 10.0),
+        'spring_stiffness_bounds': (0.5, 6.0),
+        'mass_bounds': (10.0, 100.0),
+    },
+}
+eval_dict = {
+    'fixed': ['fixed', 'small', 'large'],
+    'small': ['small', 'large'],
+    'large': ['large'],
+}
 
 if env_name == "Sequential":
 
@@ -250,6 +279,34 @@ elif env_name == "AntP":
     max_steps = 1000
     est_min_steps = 20
 
+else:
+    assert '-' in env_name
+    env_task, env_type = env_name.split('-')
+    if env_task.lower() == 'msd':
+        from additional_gym_envs.msd_env import MassSpringDamperEnv
+        env_class = MassSpringDamperEnv
+    else:
+        from additional_gym_envs.double_msd_env import DoubleMassSpringDamperEnv
+        env_class = DoubleMassSpringDamperEnv
+    env = env_class(
+        observations='xtf',
+        action_is_change=True,
+        **vary_dict[env_type],
+    )
+    env_test = env_class(
+        observations='xtf',
+        action_is_change=True,
+        **vary_dict[env_type],
+    )
+    # env_test = {k: env_class(
+    #     observations='xtf',
+    #     action_is_change=True,
+    #     **vary_dict[k],
+    # ) for k in eval_dict[env_type]}
+    action_filter = lambda a: a.reshape([-1])
+    max_steps = 100
+    est_min_steps = 10
+
 
 rnn_type = 'mtlstm'
 d_layers = [256, ]
@@ -375,7 +432,10 @@ while global_step < max_all_steps:
 
         if global_step % step_perf_eval == 0:
             agent_test.load_state_dict(agent.state_dict())  # update agent_test
-            EpiTestRet = test_performance(agent_test, env_test, action_filter, times=5)
+            if isinstance(env_test, dict):
+            else:
+                EpiTestRet = test_performance(agent_test, env_test, action_filter,
+                                              times=5)
             performance_wrt_step.append(EpiTestRet)
             global_steps.append(global_step)
             warnings.warn(env_name + ": global step: {}, : steps {}, test return {}".format(
