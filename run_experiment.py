@@ -8,7 +8,6 @@ Options:
   --steps=<kn>  How many steps to run [default: 50000].
   --seed=<kn>  Random seed [default: 0].
 """
-
 from docopt import docopt
 import numpy as np
 import torch
@@ -17,6 +16,7 @@ from vrdm import VRM, VRDM
 import os
 import warnings
 import scipy.io as sio
+import pickle as pkl
 
 
 arguments = docopt(__doc__, version='1.0')
@@ -45,16 +45,34 @@ def test_performance(agent_test, env_test, action_filter, times=10):
     return EpiTestRet / times
 
 
-savepath = './data/'
+def custom_test(agent_test, env_test, action_filter, settings):
+    test_ret = 0
+    for task, target, start in zip(settings['task'], settings['targets'],
+                                   settings['start']):
+        # reset each episode
+        s0 = env_test.reset(task=task, targets=target, start=start).astype(np.float32)
+        r0 = np.array([0.], dtype=np.float32)
+        x0 = np.concatenate([s0, r0])
+        a = agent_test.init_episode(x0).reshape(-1)
 
-if os.path.exists(savepath):
-    warnings.warn('{} exists (possibly so do data).'.format(savepath))
-else:
-    os.makedirs(savepath)
+        for t in range(max_steps):
+            if np.any(np.isnan(a)):
+                raise ValueError
+            sp, r, done, _ = env_test.step(action_filter(a))
+            a = agent_test.select(sp, r, action_return='normal')
+            test_ret += r
+            if done:
+                break
+
+    return test_ret / len(settings['task'])
+
+
+
 
 seed = int(arguments["--seed"])  # random seed
 np.random.seed(seed)
 torch.manual_seed(seed)
+
 
 beta_h = 'auto_1.0'
 optimizer_st = 'adam'
@@ -62,11 +80,12 @@ minibatch_size = 4
 seq_len = 64
 reward_scale = 1.0
 lr_vrm = 8e-4
-gamma = 0.99
+gamma = 0.95
 max_all_steps = int(arguments["--steps"])  # total steps to learn
-step_perf_eval = 2000  # how many steps to do evaluation
+step_perf_eval = 5000  # how many steps to do evaluation
 
 env_name = arguments["--env"]
+
 
 if arguments["--render"]:
     rendering = True
@@ -94,12 +113,27 @@ vary_dict = {
         'spring_stiffness_bounds': (0.5, 6.0),
         'mass_bounds': (10.0, 100.0),
     },
+    'sim': {
+        'mass_bounds': (15.0, 25.0),
+        'friction_bounds': (0.0, 0.0),
+        'skfdiff_bounds': (0.0, 0.0),
+    },
+    'real': {
+        'mass_bounds': (5.0, 35.0),
+        'friction_bounds': (0.05, 0.25),
+        'skfdiff_bounds': (0.25, 0.75),
+    },
 }
 eval_dict = {
     'fixed': ['fixed', 'small', 'large'],
-    'small': ['small', 'large'],
-    'large': ['large'],
+    'small': ['fixed', 'small', 'large'],
+    'large': ['fixed', 'small', 'large'],
+    'sim': ['sim', 'real'],
+    'real': ['sim', 'real'],
 }
+
+savepath = f'./data/{env_name}/{seed}'
+os.makedirs(savepath)
 
 if env_name == "Sequential":
 
@@ -285,27 +319,31 @@ else:
     if env_task.lower() == 'msd':
         from additional_gym_envs.msd_env import MassSpringDamperEnv
         env_class = MassSpringDamperEnv
-    else:
+    elif env_task.lower() == 'dmsd':
         from additional_gym_envs.double_msd_env import DoubleMassSpringDamperEnv
         env_class = DoubleMassSpringDamperEnv
+    elif env_task.lower() == 'nav':
+        from additional_gym_envs.nav import Navigation
+        env_class = Navigation
     env = env_class(
         observations='xtf',
         action_is_change=True,
         **vary_dict[env_type],
     )
-    env_test = env_class(
+    env_test = {k: env_class(
         observations='xtf',
         action_is_change=True,
-        **vary_dict[env_type],
-    )
-    # env_test = {k: env_class(
-    #     observations='xtf',
-    #     action_is_change=True,
-    #     **vary_dict[k],
-    # ) for k in eval_dict[env_type]}
+        **vary_dict[k],
+    ) for k in eval_dict[env_type]}
+    settings = {}
+    for test_type in eval_dict[env_type]:
+        with open(f'env_settings/{env_task.lower()}-{test_type}-te.pkl') as f:
+            settings[test_type] = pkl.load(f)
     action_filter = lambda a: a.reshape([-1])
     max_steps = 100
     est_min_steps = 10
+    with open(os.path.join(savepath, 'log.csv'), 'w') as log:
+        log.write(','.join(['Steps'] + eval_dict[env_type] + ['\n']))
 
 
 rnn_type = 'mtlstm'
@@ -315,7 +353,7 @@ x_phi_layers = [128]
 decode_layers = [128, 128]
 
 value_layers = [256, 256]
-policy_layers = [256, 256]
+policy_layers = [24]
 
 step_start_rl = 1000
 step_start_st = 1000
@@ -433,10 +471,21 @@ while global_step < max_all_steps:
         if global_step % step_perf_eval == 0:
             agent_test.load_state_dict(agent.state_dict())  # update agent_test
             if isinstance(env_test, dict):
+                rets = []
+                for k in eval_dict[env_type]:
+                    ret = custom_test(agent_test, env_test[k], action_filter,
+                                      settings[k])
+                    rets.append(ret)
+                    if k == env_type:
+                        performance_wrt_step.append(ret)
+                # Log all of the rets.
+                with open(os.path.join(savepath, 'log.csv'), 'a') as log:
+                    log.write(','.join([str(global_step)] + [str(r) for r in rets]
+                                       + ['\n']))
             else:
                 EpiTestRet = test_performance(agent_test, env_test, action_filter,
                                               times=5)
-            performance_wrt_step.append(EpiTestRet)
+                performance_wrt_step.append(EpiTestRet)
             global_steps.append(global_step)
             warnings.warn(env_name + ": global step: {}, : steps {}, test return {}".format(
                 global_step, t, EpiTestRet))
