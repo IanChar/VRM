@@ -14,8 +14,6 @@ import time
 
 import numpy as np
 
-from autocal import AUTOCAL_PATH
-
 # Parse Arguments.
 parser = argparse.ArgumentParser()
 parser.add_argument('--script', type=str,
@@ -30,14 +28,14 @@ parser.add_argument('--jobs_per_gpu', type=int,
 args = parser.parse_args()
 
 # Initialize global variables.
-LOG_PATH = os.path.join(args.job_log_dir, f'{datetime.datetime.now()}.txt')
+LOG_PATH = os.path.join('logs', f'{datetime.datetime.now()}.txt')
 GPU_COUNTS = [0 for _ in range(args.num_gpus)]
 MAX_RUNNING = sum([args.jobs_per_gpu - gc for gc in GPU_COUNTS])
 RUNNING = []
 seed_offset = 0
 ARG_DICT = {
     'seed': [i + seed_offset for i in range(args.num_seeds)],
-    'env_name': args.env.split(','),
+    'env': args.env.split(','),
 }
 
 
@@ -70,16 +68,15 @@ def add_job(job_args):
     while gpu < len(GPU_COUNTS) - 1 and GPU_COUNTS[gpu] >= args.jobs_per_gpu:
         gpu += 1
     GPU_COUNTS[gpu] += 1
-    cmd = f'python {args.script} run --steps=1000000 '
-    cmd += ' '.join([f'--{k}={v}' for k, v in job_args.items()])
+    cmd = (f'python {args.script} run --env={job_args["env"]} '
+           f'--steps=1000000 --seed={job_args["seed"]}')
     proc = subprocess.Popen(cmd, shell=True)
     RUNNING.append(Job(proc, gpu, job_args))
 
 
 # Run it!
-os.chdir(AUTOCAL_PATH)
-if not os.path.exists(args.job_log_dir):
-    os.makedirs(args.job_log_dir)
+if not os.path.exists('logs'):
+    os.makedirs('logs')
 with open(LOG_PATH, 'w') as f:
     f.write('Timestamp \t Status \t Args\n')
 arg_keys = list(ARG_DICT.keys())
