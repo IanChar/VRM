@@ -337,7 +337,7 @@ else:
     ) for k in eval_dict[env_type]}
     settings = {}
     for test_type in eval_dict[env_type]:
-        with open(f'env_settings/{env_task.lower()}-{test_type}-te.pkl') as f:
+        with open(f'env_settings/{env_task.lower()}-{test_type}-te.pkl', 'rb') as f:
             settings[test_type] = pkl.load(f)
     action_filter = lambda a: a.reshape([-1])
     max_steps = 100
